@@ -89,16 +89,29 @@ export function setupAuth(app: Express) {
         return res.status(400).json({ error: "Username and password are required" });
       }
       
+      if (!email) {
+        return res.status(400).json({ error: "Email is required" });
+      }
+      
       const normalizedUsername = username.toLowerCase();
+      const normalizedEmail = email.toLowerCase();
+      
+      // Check for existing username
       const existingUser = await storage.getUserByUsername(normalizedUsername);
       if (existingUser) {
         return res.status(400).json({ error: "Username already exists" });
+      }
+      
+      // Check for existing email
+      const existingEmailUser = await storage.getUserByEmail(normalizedEmail);
+      if (existingEmailUser) {
+        return res.status(400).json({ error: "Email already exists" });
       }
 
       const user = await storage.createUser({
         username: normalizedUsername,
         password: await hashPassword(password),
-        email,
+        email: normalizedEmail,
         firstName,
         lastName,
         profileImageUrl: null,
