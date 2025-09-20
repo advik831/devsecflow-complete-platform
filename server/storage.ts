@@ -82,10 +82,19 @@ export class DatabaseStorage implements IStorage {
   constructor() {
     // Initialize session store with PostgreSQL using the same pool as main app
     const PostgresSessionStore = connectPg(session);
+    
+    // Ensure we're using the correct database connection
+    if (!pool) {
+      throw new Error("Database pool not initialized. Check DATABASE_URL configuration.");
+    }
+    
     this.sessionStore = new PostgresSessionStore({ 
       pool: pool, // Use the same database pool as the main application
       createTableIfMissing: true,
-      tableName: "user_sessions" // Use different table name to avoid conflicts
+      tableName: "user_sessions", // Use different table name to avoid conflicts
+      errorLog: (err: Error) => {
+        console.error("Session store error:", err.message);
+      }
     });
   }
 
