@@ -1,0 +1,41 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: devops-platform-external-db
+
+resources:
+  - ../../base
+
+configMapGenerator:
+  - name: devops-platform-config
+    behavior: merge
+    literals:
+      - DATABASE_MODE=external
+      - DB_SSL=true
+      - RUN_MIGRATIONS=false
+
+secretGenerator:
+  - name: devops-platform-secrets
+    behavior: merge
+    literals:
+      - DATABASE_URL=postgresql://username:password@hostname:5432/database # Update with actual values
+
+commonLabels:
+  deployment-type: external-database
+
+# Remove database-specific resources for external DB
+patchesJson6902:
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: devops-platform-config
+    patch: |-
+      - op: remove
+        path: /data/DB_HOST
+      - op: remove
+        path: /data/DB_PORT
+      - op: remove
+        path: /data/DB_NAME
+      - op: remove
+        path: /data/DB_USER
