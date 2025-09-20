@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: devops-platform-bundled-db
+
+resources:
+  - ../../base
+  - ../../base/postgres-statefulset.yaml
+
+patchesStrategicMerge:
+  - storage-class-patch.yaml
+
+configMapGenerator:
+  - name: devops-platform-config
+    behavior: merge
+    literals:
+      - DATABASE_MODE=bundled
+      - DB_HOST=devops-platform-db-service
+      - DB_PORT=5432
+      - DB_NAME=devops_platform
+      - DB_USER=postgres
+      - DB_SSL=false
+      - RUN_MIGRATIONS=false
+
+commonLabels:
+  deployment-type: bundled-database
