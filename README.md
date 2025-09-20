@@ -77,8 +77,8 @@ A simple yet powerful DevOps platform that helps you build, test, and deploy you
 
 1. **Get the code**
    ```bash
-   git clone https://github.com/advik831/devops-platform-mvp.git
-   cd devops-platform-mvp
+   git clone https://github.com/advik831/devsecflow-complete-platform.git
+   cd devsecflow-complete-platform
    ```
 
 2. **Run the automatic setup**
@@ -120,8 +120,8 @@ A simple yet powerful DevOps platform that helps you build, test, and deploy you
 
 1. **Get the code**
    ```bash
-   git clone https://github.com/advik831/devops-platform-mvp.git
-   cd devops-platform-mvp
+   git clone https://github.com/advik831/devsecflow-complete-platform.git
+   cd devsecflow-complete-platform
    ```
 
 2. **Create environment file**
@@ -245,7 +245,7 @@ DATABASE_URL=postgresql://username:password@hostname:5432/database_name
 ## 📊 Project Structure
 
 ```
-devops-platform-mvp/
+devsecflow-complete-platform/
 ├── client/                 # Frontend React application
 │   ├── src/
 │   │   ├── components/     # Reusable UI components
@@ -361,7 +361,7 @@ rm -f .env.local
 
 ### Need Help?
 
-- Check the [Issues page](https://github.com/advik831/devops-platform-mvp/issues) for common problems
+- Check the [Issues page](https://github.com/advik831/devsecflow-complete-platform/issues) for common problems
 - Create a new issue if you find a bug
 
 ## 📄 License
@@ -378,8 +378,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - **Documentation**: [View Docs](docs/)
-- **Issues**: [GitHub Issues](https://github.com/advik831/devops-platform-mvp/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/advik831/devops-platform-mvp/discussions)
+- **Issues**: [GitHub Issues](https://github.com/advik831/devsecflow-complete-platform/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/advik831/devsecflow-complete-platform/discussions)
 
 ---
 
@@ -387,8 +387,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Built with ❤️ by developers, for developers**
 
-[![GitHub stars](https://img.shields.io/github/stars/advik831/devops-platform-mvp?style=social)](https://github.com/advik831/devops-platform-mvp/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/advik831/devops-platform-mvp?style=social)](https://github.com/advik831/devops-platform-mvp/network/members)
-[![GitHub issues](https://img.shields.io/github/issues/advik831/devops-platform-mvp)](https://github.com/advik831/devops-platform-mvp/issues)
+[![GitHub stars](https://img.shields.io/github/stars/advik831/devsecflow-complete-platform?style=social)](https://github.com/advik831/devsecflow-complete-platform/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/advik831/devsecflow-complete-platform?style=social)](https://github.com/advik831/devsecflow-complete-platform/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/advik831/devsecflow-complete-platform)](https://github.com/advik831/devsecflow-complete-platform/issues)
 
 </div>
