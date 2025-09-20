@@ -27,6 +27,7 @@ import { db } from "./db";
 import { eq, desc, and, sql } from "drizzle-orm";
 import session from "express-session";
 import connectPg from "connect-pg-simple";
+import { pool } from "./db";
 
 export interface IStorage {
   // User operations (required for username/password auth)
@@ -79,10 +80,10 @@ export class DatabaseStorage implements IStorage {
   public sessionStore: session.Store;
   
   constructor() {
-    // Initialize session store with PostgreSQL
+    // Initialize session store with PostgreSQL using the same pool as main app
     const PostgresSessionStore = connectPg(session);
     this.sessionStore = new PostgresSessionStore({ 
-      conString: process.env.DATABASE_URL,
+      pool: pool, // Use the same database pool as the main application
       createTableIfMissing: true,
       tableName: "user_sessions" // Use different table name to avoid conflicts
     });
