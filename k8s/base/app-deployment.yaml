@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devops-platform-app
+  labels:
+    app: devops-platform
+    component: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: devops-platform
+      component: app
+  template:
+    metadata:
+      labels:
+        app: devops-platform
+        component: app
+    spec:
+      containers:
+      - name: app
+        image: devops-platform:latest
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "5000"
+        envFrom:
+        - configMapRef:
+            name: devops-platform-config
+        - secretRef:
+            name: devops-platform-secrets
+        livenessProbe:
+          httpGet:
+            path: /api/auth/user
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/auth/user
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads
+      volumes:
+      - name: uploads
+        emptyDir: {}
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: devops-platform-app-service
+  labels:
+    app: devops-platform
+    component: app
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  selector:
+    app: devops-platform
+    component: app
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devops-platform-config
+  labels:
+    app: devops-platform
+data:
+  DATABASE_MODE: "bundled"
+  DB_HOST: "devops-platform-db-service"
+  DB_PORT: "5432"
+  DB_NAME: "devops_platform"
+  DB_USER: "postgres"
+  DB_SSL: "false"
+  RUN_MIGRATIONS: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: devops-platform-secrets
+  labels:
+    app: devops-platform
+type: Opaque
+data:
+  # REQUIRED: Override these values for production deployment
+  # Use: kubectl create secret generic devops-platform-secrets --from-literal=SESSION_SECRET="your-secret" --from-literal=DB_PASSWORD="your-password"
+  SESSION_SECRET: UkVRVUlSRUQtT1ZFUlJJREU= # Base64: "REQUIRED-OVERRIDE"
+  DB_PASSWORD: UkVRVUlSRUQtT1ZFUlJJREU= # Base64: "REQUIRED-OVERRIDE"
+  # Optional GitHub integration (base64 encoded)
+  # GITHUB_CLIENT_ID: ""
+  # GITHUB_CLIENT_SECRET: ""
