@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database for Local Development
+  postgres:
+    image: postgres:16-alpine
+    container_name: devops-platform-db
+    environment:
+      POSTGRES_DB: devops_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devops123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_local_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d devops_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_local_data:
+    driver: local
