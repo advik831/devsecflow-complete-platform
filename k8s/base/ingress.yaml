@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: devops-platform-ingress
+  labels:
+    app: devops-platform
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx # Change to your ingress class
+  tls:
+  - hosts:
+    - devops-platform.example.com # Change to your domain
+    secretName: devops-platform-tls
+  rules:
+  - host: devops-platform.example.com # Change to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: devops-platform-app-service
+            port:
+              number: 80
