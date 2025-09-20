@@ -6,7 +6,12 @@ import * as schema from "@shared/schema";
 function buildDatabaseURL(): string {
   // If DATABASE_URL is provided, use it directly
   if (process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL;
+    // Validate that we're not defaulting to postgres credentials
+    const dbUrl = process.env.DATABASE_URL;
+    if (dbUrl.includes('postgres:postgres@localhost') && process.env.NODE_ENV !== 'development') {
+      console.warn('⚠️  WARNING: Using default postgres credentials in non-development environment');
+    }
+    return dbUrl;
   }
 
   // Build URL from individual components
@@ -16,6 +21,11 @@ function buildDatabaseURL(): string {
   const user = process.env.DB_USER || 'postgres';
   const password = process.env.DB_PASSWORD || 'postgres';
   const ssl = process.env.DB_SSL === 'true' ? '?sslmode=require' : '';
+
+  // Warn if using default postgres credentials
+  if (user === 'postgres' && password === 'postgres' && process.env.NODE_ENV !== 'development') {
+    console.warn('⚠️  WARNING: Using default postgres credentials in non-development environment');
+  }
 
   return `postgresql://${user}:${password}@${host}:${port}/${name}${ssl}`;
 }
