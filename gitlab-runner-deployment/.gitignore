@@ -1,0 +1,37 @@
+# Environment configuration
+.env.gitlab-runner
+
+# Generated files
+custom-values.yaml
+cache-config.yaml
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# Kubernetes secrets
+*.key
+*.crt
+*.pem
+
+# Helm charts
+charts/
+*.tgz
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.backup

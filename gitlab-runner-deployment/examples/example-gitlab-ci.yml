@@ -1,0 +1,294 @@
+################################################################################
+# Example GitLab CI/CD Pipeline
+################################################################################
+# This example demonstrates how to use the deployed GitLab Runner
+# Copy this to your project as .gitlab-ci.yml
+################################################################################
+
+# Define stages
+stages:
+  - test
+  - build
+  - deploy
+
+# Global variables
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  # Use cache for dependencies
+  CACHE_KEY: ${CI_COMMIT_REF_SLUG}
+
+# Cache configuration (uses Azure Blob Storage)
+cache:
+  key: ${CACHE_KEY}
+  paths:
+    - node_modules/
+    - .npm/
+    - vendor/
+    - .cache/
+
+################################################################################
+# Test Stage
+################################################################################
+
+# Simple test job
+test:basic:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: alpine:latest
+  script:
+    - echo "Running basic tests..."
+    - echo "Runner is working correctly!"
+    - echo "Kubernetes namespace: ${KUBERNETES_NAMESPACE}"
+    - echo "CI Pipeline ID: ${CI_PIPELINE_ID}"
+  only:
+    - branches
+
+# Node.js test example
+test:nodejs:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: node:18-alpine
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - echo "Running Node.js tests..."
+    - npm run test || echo "No tests defined"
+    - npm run lint || echo "No linting defined"
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-node
+    paths:
+      - node_modules/
+      - .npm/
+  artifacts:
+    reports:
+      junit: junit.xml
+    paths:
+      - coverage/
+    expire_in: 1 week
+  only:
+    - branches
+
+# Python test example
+test:python:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: python:3.11-slim
+  before_script:
+    - pip install --cache-dir .cache/pip -r requirements.txt || echo "No requirements.txt"
+  script:
+    - echo "Running Python tests..."
+    - python --version
+    - pytest || echo "No tests found"
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-python
+    paths:
+      - .cache/pip
+  only:
+    - branches
+
+# Security scanning
+test:security:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: aquasec/trivy:latest
+  script:
+    - echo "Running security scan..."
+    - trivy --version
+    # Add your security scanning commands here
+  allow_failure: true
+  only:
+    - branches
+
+################################################################################
+# Build Stage
+################################################################################
+
+# Docker build example
+build:docker:
+  stage: build
+  tags:
+    - docker
+    - kubernetes
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - master
+    - develop
+
+# Node.js build example
+build:nodejs:
+  stage: build
+  tags:
+    - docker
+    - kubernetes
+  image: node:18-alpine
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - echo "Building Node.js application..."
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+      - build/
+    expire_in: 1 day
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}-node
+    paths:
+      - node_modules/
+      - .npm/
+  only:
+    - main
+    - master
+    - develop
+
+################################################################################
+# Deploy Stage
+################################################################################
+
+# Deploy to staging
+deploy:staging:
+  stage: deploy
+  tags:
+    - docker
+    - kubernetes
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Deploying to staging environment..."
+    - kubectl version --client
+    - kubectl get nodes
+    # Add your deployment commands here
+    # kubectl apply -f k8s/staging/
+  environment:
+    name: staging
+    url: https://staging.example.com
+  only:
+    - develop
+  when: manual
+
+# Deploy to production
+deploy:production:
+  stage: deploy
+  tags:
+    - docker
+    - kubernetes
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Deploying to production environment..."
+    - kubectl version --client
+    - kubectl get nodes
+    # Add your deployment commands here
+    # kubectl apply -f k8s/production/
+  environment:
+    name: production
+    url: https://example.com
+  only:
+    - main
+    - master
+  when: manual
+
+################################################################################
+# Additional Examples
+################################################################################
+
+# Parallel jobs example
+test:parallel:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: alpine:latest
+  script:
+    - echo "Running parallel test ${CI_NODE_INDEX}/${CI_NODE_TOTAL}"
+    - sleep 10
+  parallel: 3
+  only:
+    - branches
+
+# Scheduled job example
+maintenance:cleanup:
+  stage: test
+  tags:
+    - docker
+    - kubernetes
+  image: alpine:latest
+  script:
+    - echo "Running maintenance tasks..."
+    - echo "Cleaning up old artifacts..."
+  only:
+    - schedules
+
+# Multi-stage Docker build with cache
+build:docker-cached:
+  stage: build
+  tags:
+    - docker
+    - kubernetes
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_BUILDKIT: 1
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Building with BuildKit cache..."
+    - |
+      docker build \
+        --cache-from $CI_REGISTRY_IMAGE:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA \
+        -t $CI_REGISTRY_IMAGE:latest \
+        .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - master
+
+################################################################################
+# Notes
+################################################################################
+# 
+# Runner Tags:
+#   - docker: Jobs that need Docker
+#   - kubernetes: Jobs running in Kubernetes
+#   - production: Production-specific runners
+#
+# Cache:
+#   - Automatically stored in Azure Blob Storage
+#   - Shared across pipeline runs
+#   - Speeds up dependency installation
+#
+# Artifacts:
+#   - Stored in GitLab
+#   - Passed between stages
+#   - Available for download
+#
+# For more information:
+#   https://docs.gitlab.com/ee/ci/yaml/
+#
+################################################################################
