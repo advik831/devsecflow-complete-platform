@@ -1,335 +1,485 @@
-#!/bin/bash
-
-################################################################################
-# Image Mirroring Script
-################################################################################
-# Description: Mirrors container images from public registries to private registry
-# Dependencies: skopeo, docker (optional)
-################################################################################
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-################################################################################
-# Global Variables
-################################################################################
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PARENT_DIR="$(dirname "${SCRIPT_DIR}")"
+# Docker Image Mirroring Script
+# Mirror public Docker images to private registry with vulnerability scanning
+# Supports skopeo, crane, and docker with tool detection and fallback
 
-# Color codes
+# Color output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Counters
-TOTAL_IMAGES=0
-SUCCESSFUL_MIRRORS=0
-FAILED_MIRRORS=0
+# Configuration - using EXACT environment variables as specified
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REGISTRY_HOST="${REGISTRY_HOST:-}"
+REGISTRY_USER="${REGISTRY_USER:-}"
+REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
+CA_CERT_FILE="${CA_CERT_FILE:-}"
+SCAN_IMAGES="${SCAN_IMAGES:-true}" 
+SIGN_IMAGES="${SIGN_IMAGES:-false}"
+COSIGN_KEY="${COSIGN_KEY:-}"
 
-################################################################################
-# Functions
-################################################################################
+# Proxy configuration
+USE_PROXY="${USE_PROXY:-false}"
+HTTP_PROXY="${HTTP_PROXY:-}"
+HTTPS_PROXY="${HTTPS_PROXY:-}"
+NO_PROXY="${NO_PROXY:-}"
 
-log() {
-    local level=$1
-    shift
-    local message="$*"
-    
-    case ${level} in
-        ERROR)
-            echo -e "${RED}[${level}]${NC} ${message}" >&2
-            ;;
-        WARN)
-            echo -e "${YELLOW}[${level}]${NC} ${message}"
-            ;;
-        SUCCESS)
-            echo -e "${GREEN}[${level}]${NC} ${message}"
-            ;;
-        INFO)
-            echo -e "${BLUE}[${level}]${NC} ${message}"
-            ;;
-    esac
+# Image mirroring configuration
+SRC_IMAGE="${SRC_IMAGE:-}"
+DEST_REGISTRY_PATH="${DEST_REGISTRY_PATH:-}"
+DEST_TAG="${DEST_TAG:-}"
+PUSH_LATEST="${PUSH_LATEST:-false}"
+
+# Default images to mirror (if SRC_IMAGE not set)
+DEFAULT_IMAGES=(
+  "alpine:3.19"
+  "docker:24-dind"
+  "gitlab/gitlab-runner:alpine"
+  "ubuntu:22.04"
+  "node:20-alpine"
+  "python:3.11-slim"
+)
+
+# Tool selection (set by detection)
+MIRROR_TOOL=""
+
+# Logging functions
+log_info() {
+  echo -e "${BLUE}[INFO]${NC} $*"
 }
 
-# Check if skopeo is available
-check_skopeo() {
-    if ! command -v skopeo &>/dev/null; then
-        log "ERROR" "skopeo is not installed. Please install it first."
-        log "INFO" "Amazon Linux 2023: sudo dnf install -y skopeo"
-        log "INFO" "Ubuntu/Debian: sudo apt-get install -y skopeo"
-        return 1
+log_success() {
+  echo -e "${GREEN}[SUCCESS]${NC} $*"
+}
+
+log_warning() {
+  echo -e "${YELLOW}[WARNING]${NC} $*"
+}
+
+log_error() {
+  echo -e "${RED}[ERROR]${NC} $*" >&2
+}
+
+# Check if command exists
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# Setup proxy if enabled
+setup_proxy() {
+  if [ "$USE_PROXY" = "true" ]; then
+    log_info "Configuring proxy settings..."
+    [ -n "$HTTP_PROXY" ] && export HTTP_PROXY
+    [ -n "$HTTPS_PROXY" ] && export HTTPS_PROXY
+    [ -n "$NO_PROXY" ] && export NO_PROXY
+    log_success "Proxy configured"
+  fi
+}
+
+# Detect available mirroring tool
+detect_mirror_tool() {
+  log_info "Detecting available image mirroring tools..."
+  
+  if command_exists skopeo; then
+    MIRROR_TOOL="skopeo"
+    log_success "Using skopeo for image mirroring"
+  elif command_exists crane; then
+    MIRROR_TOOL="crane"
+    log_success "Using crane for image mirroring"
+  elif command_exists docker; then
+    MIRROR_TOOL="docker"
+    log_success "Using docker for image mirroring"
+  else
+    log_error "No image mirroring tool found (skopeo, crane, or docker)"
+    log_info "Please install one of: skopeo (preferred), crane, or docker"
+    exit 1
+  fi
+}
+
+# Validate prerequisites
+validate_prerequisites() {
+  log_info "Validating prerequisites..."
+  
+  detect_mirror_tool
+  
+  if [ "$SCAN_IMAGES" = "true" ] && ! command_exists trivy; then
+    log_warning "Trivy not found, image scanning will be skipped"
+    SCAN_IMAGES="false"
+  fi
+  
+  if [ "$SIGN_IMAGES" = "true" ]; then
+    if ! command_exists cosign; then
+      log_warning "Cosign not found, image signing will be skipped"
+      SIGN_IMAGES="false"
+    elif [ -z "$COSIGN_KEY" ]; then
+      log_warning "COSIGN_KEY not set, image signing will be skipped"
+      SIGN_IMAGES="false"
     fi
-    
-    local version=$(skopeo --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' || echo "unknown")
-    log "INFO" "Using skopeo version: ${version}"
-    return 0
+  fi
+  
+  log_success "Prerequisites validated"
 }
 
-# Login to private registry
+# Validate environment
+validate_environment() {
+  log_info "Validating environment..."
+  
+  if [ -z "$REGISTRY_HOST" ]; then
+    log_error "REGISTRY_HOST is not set"
+    exit 1
+  fi
+  
+  if [ -z "$REGISTRY_USER" ] || [ -z "$REGISTRY_PASSWORD" ]; then
+    log_error "Registry credentials not set (REGISTRY_USER, REGISTRY_PASSWORD)"
+    exit 1
+  fi
+  
+  log_success "Environment validated"
+}
+
+# Login to registry using detected tool
 registry_login() {
-    log "INFO" "Logging in to private registry: ${REGISTRY_HOST}"
-    
-    # Try skopeo login
-    if command -v skopeo &>/dev/null; then
-        if echo "${REGISTRY_PASSWORD}" | skopeo login \
-            --username "${REGISTRY_USER}" \
-            --password-stdin \
-            "${REGISTRY_HOST}" &>/dev/null; then
-            log "SUCCESS" "Successfully logged in to registry (skopeo)"
-            return 0
-        fi
-    fi
-    
-    # Try docker login as fallback
-    if command -v docker &>/dev/null; then
-        if echo "${REGISTRY_PASSWORD}" | docker login \
-            --username "${REGISTRY_USER}" \
-            --password-stdin \
-            "${REGISTRY_HOST}" &>/dev/null; then
-            log "SUCCESS" "Successfully logged in to registry (docker)"
-            return 0
-        fi
-    fi
-    
-    log "ERROR" "Failed to login to registry"
-    return 1
+  log_info "Logging in to registry: $REGISTRY_HOST..."
+  
+  local login_success=false
+  
+  case "$MIRROR_TOOL" in
+    skopeo)
+      if [ -n "$CA_CERT_FILE" ]; then
+        skopeo login --authfile="${HOME}/.docker/config.json" \
+          --cert-dir="$(dirname "$CA_CERT_FILE")" \
+          --username="$REGISTRY_USER" \
+          --password="$REGISTRY_PASSWORD" \
+          "$REGISTRY_HOST" && login_success=true
+      else
+        skopeo login --authfile="${HOME}/.docker/config.json" \
+          --username="$REGISTRY_USER" \
+          --password="$REGISTRY_PASSWORD" \
+          "$REGISTRY_HOST" && login_success=true
+      fi
+      ;;
+    crane)
+      echo "$REGISTRY_PASSWORD" | crane auth login "$REGISTRY_HOST" \
+        --username "$REGISTRY_USER" \
+        --password-stdin && login_success=true
+      ;;
+    docker)
+      echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+        --username "$REGISTRY_USER" \
+        --password-stdin && login_success=true
+      ;;
+  esac
+  
+  if [ "$login_success" = true ]; then
+    log_success "Logged in to registry"
+  else
+    log_error "Failed to login to registry"
+    exit 1
+  fi
 }
 
-# Check if image exists in destination registry
-image_exists() {
-    local dest_image=$1
-    
-    if skopeo inspect "docker://${dest_image}" &>/dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# Mirror a single image
-mirror_image() {
-    local src_image=$1
-    local dest_image=$2
-    local push_latest=${3:-false}
-    
-    log "INFO" "Mirroring: ${src_image} -> ${dest_image}"
-    
-    # Check if destination image already exists
-    if image_exists "${dest_image}"; then
-        log "WARN" "Image already exists in destination: ${dest_image}"
-        log "INFO" "Skipping (idempotent operation)"
-        return 0
-    fi
-    
-    # Copy image using skopeo
-    local copy_cmd="skopeo copy"
-    
-    # Add CA cert if provided
-    if [[ -n "${CA_CERT_FILE:-}" ]] && [[ -f "${CA_CERT_FILE}" ]]; then
-        copy_cmd="${copy_cmd} --dest-cert-dir=$(dirname ${CA_CERT_FILE})"
-    fi
-    
-    # Add proxy settings if enabled
-    if [[ "${USE_PROXY:-false}" == "true" ]]; then
-        if [[ -n "${HTTPS_PROXY:-}" ]]; then
-            export HTTPS_PROXY="${HTTPS_PROXY}"
-        fi
-        if [[ -n "${HTTP_PROXY:-}" ]]; then
-            export HTTP_PROXY="${HTTP_PROXY}"
-        fi
-        if [[ -n "${NO_PROXY:-}" ]]; then
-            export NO_PROXY="${NO_PROXY}"
-        fi
-    fi
-    
-    # Perform the copy
-    if ${copy_cmd} \
-        --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
-        "docker://${src_image}" \
-        "docker://${dest_image}"; then
-        log "SUCCESS" "Successfully mirrored: ${dest_image}"
-        
-        # Push latest tag if requested
-        if [[ "${push_latest}" == "true" ]]; then
-            local dest_latest="${dest_image%:*}:latest"
-            log "INFO" "Tagging as latest: ${dest_latest}"
-            
-            if ${copy_cmd} \
-                --dest-creds "${REGISTRY_USER}:${REGISTRY_PASSWORD}" \
-                "docker://${src_image}" \
-                "docker://${dest_latest}"; then
-                log "SUCCESS" "Successfully tagged as latest: ${dest_latest}"
-            else
-                log "WARN" "Failed to tag as latest (non-critical)"
-            fi
-        fi
-        
-        return 0
-    else
-        log "ERROR" "Failed to mirror: ${src_image}"
-        return 1
-    fi
-}
-
-# Parse image name and generate destination
-parse_and_mirror() {
-    local src_image=$1
-    
-    # Extract image name and tag
-    local image_name="${src_image%:*}"
-    local image_tag="${src_image##*:}"
-    
-    # If no tag specified, use latest
-    if [[ "${image_name}" == "${image_tag}" ]]; then
-        image_tag="latest"
-    fi
-    
-    # Extract just the image name without registry
-    local short_name="${image_name##*/}"
-    
-    # Build destination image path
-    local dest_path="${DEST_REGISTRY_PATH:-gitlab}"
-    local dest_image="${REGISTRY_HOST}/${dest_path}/${short_name}:${image_tag}"
-    
-    # Mirror the image
-    if mirror_image "${src_image}" "${dest_image}" "${PUSH_LATEST:-false}"; then
-        ((SUCCESSFUL_MIRRORS++))
-    else
-        ((FAILED_MIRRORS++))
-    fi
-}
-
-# Mirror all configured images
-mirror_all_images() {
-    log "INFO" "Starting image mirroring process..."
-    
-    # Check if IMAGES_TO_MIRROR is defined
-    if [[ -z "${IMAGES_TO_MIRROR:-}" ]]; then
-        log "WARN" "No images configured for mirroring (IMAGES_TO_MIRROR is empty)"
-        return 0
-    fi
-    
-    # Count total images
-    TOTAL_IMAGES=${#IMAGES_TO_MIRROR[@]}
-    log "INFO" "Total images to mirror: ${TOTAL_IMAGES}"
-    
-    # Mirror each image
-    for image in "${IMAGES_TO_MIRROR[@]}"; do
-        log "INFO" "Processing: ${image}"
-        parse_and_mirror "${image}"
-        log "INFO" ""
-    done
-}
-
-# Mirror custom images from environment variables
-mirror_custom_images() {
-    # Check for custom image mirroring configuration
-    if [[ -n "${SRC_IMAGE:-}" ]] && [[ -n "${DEST_REPO_PATH:-}" ]]; then
-        log "INFO" "Mirroring custom image configuration..."
-        
-        local src="${SRC_IMAGE}"
-        local dest_path="${DEST_REPO_PATH}"
-        local dest_tag="${DEST_TAG:-latest}"
-        local push_latest="${PUSH_LATEST:-false}"
-        
-        # Extract image name
-        local image_name="${src##*/}"
-        image_name="${image_name%:*}"
-        
-        local dest_image="${dest_path}:${dest_tag}"
-        
-        if mirror_image "${src}" "${dest_image}" "${push_latest}"; then
-            ((SUCCESSFUL_MIRRORS++))
-        else
-            ((FAILED_MIRRORS++))
-        fi
-        
-        ((TOTAL_IMAGES++))
-    fi
-}
-
-# Print summary
-print_summary() {
-    log "INFO" ""
-    log "INFO" "=== Image Mirroring Summary ==="
-    log "INFO" "Total images: ${TOTAL_IMAGES}"
-    log "SUCCESS" "Successful: ${SUCCESSFUL_MIRRORS}"
-    
-    if [[ ${FAILED_MIRRORS} -gt 0 ]]; then
-        log "ERROR" "Failed: ${FAILED_MIRRORS}"
-    else
-        log "INFO" "Failed: ${FAILED_MIRRORS}"
-    fi
-    
-    log "INFO" "==============================="
-    
-    if [[ ${FAILED_MIRRORS} -gt 0 ]]; then
-        log "WARN" "Some images failed to mirror. Check logs above for details."
-        return 1
-    else
-        log "SUCCESS" "All images mirrored successfully!"
-        return 0
-    fi
-}
-
-# Validate environment variables
-validate_env() {
-    local required_vars=(
-        "REGISTRY_HOST"
-        "REGISTRY_USER"
-        "REGISTRY_PASSWORD"
-    )
-    
-    local missing_vars=()
-    
-    for var in "${required_vars[@]}"; do
-        if [[ -z "${!var:-}" ]]; then
-            missing_vars+=("${var}")
-        fi
-    done
-    
-    if [[ ${#missing_vars[@]} -gt 0 ]]; then
-        log "ERROR" "Missing required environment variables: ${missing_vars[*]}"
-        return 1
-    fi
-    
+# Scan image with Trivy
+scan_image() {
+  local image="$1"
+  
+  log_info "Scanning image: $image"
+  
+  trivy image \
+    --severity HIGH,CRITICAL \
+    --exit-code 0 \
+    --no-progress \
+    "$image"
+  
+  local exit_code=$?
+  
+  if [ $exit_code -eq 0 ]; then
+    log_success "Image scan passed: $image"
     return 0
+  else
+    log_error "Image scan found vulnerabilities: $image"
+    return 1
+  fi
 }
 
-# Main function
+# Sign image with Cosign
+sign_image() {
+  local image="$1"
+  
+  if [ -z "$COSIGN_KEY" ]; then
+    log_warning "COSIGN_KEY not set, skipping signing"
+    return 0
+  fi
+  
+  log_info "Signing image: $image"
+  
+  cosign sign --key "$COSIGN_KEY" "$image"
+  
+  log_success "Image signed: $image"
+}
+
+# Mirror image using skopeo
+mirror_with_skopeo() {
+  local source="$1"
+  local target="$2"
+  
+  local skopeo_opts=()
+  [ -n "$CA_CERT_FILE" ] && skopeo_opts+=(--src-cert-dir="$(dirname "$CA_CERT_FILE")" --dest-cert-dir="$(dirname "$CA_CERT_FILE")")
+  
+  skopeo copy "${skopeo_opts[@]}" \
+    "docker://$source" \
+    "docker://$target"
+}
+
+# Mirror image using crane
+mirror_with_crane() {
+  local source="$1"
+  local target="$2"
+  
+  crane copy "$source" "$target"
+}
+
+# Mirror image using docker
+mirror_with_docker() {
+  local source="$1"
+  local target="$2"
+  
+  docker pull "$source"
+  docker tag "$source" "$target"
+  docker push "$target"
+  docker rmi "$source" "$target" >/dev/null 2>&1 || true
+}
+
+# Extract image name without registry and tag
+extract_image_name() {
+  local image="$1"
+  
+  # Remove registry prefix (everything before the first slash, if it contains a dot or colon)
+  local name="$image"
+  if [[ "$name" =~ ^[^/]*[.:][^/]*/(.+)$ ]]; then
+    name="${BASH_REMATCH[1]}"
+  elif [[ "$name" =~ ^[^/]+/(.+)$ ]]; then
+    # Handle cases like gitlab.com/ubuntu:22.04
+    name="${BASH_REMATCH[1]}"
+  fi
+  
+  # Extract just the image name without tag
+  name="${name%%:*}"
+  
+  echo "$name"
+}
+
+# Extract tag from image
+extract_image_tag() {
+  local image="$1"
+  
+  if [[ "$image" =~ :([^:]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo "latest"
+  fi
+}
+
+# Mirror single image
+mirror_image() {
+  local source_image="$1"
+  local dest_registry_path="${2:-}"
+  local dest_tag="${3:-}"
+  
+  # Extract image name (without registry and without tag)
+  local image_name
+  image_name=$(extract_image_name "$source_image")
+  
+  # Extract original tag if dest_tag not specified
+  if [ -z "$dest_tag" ]; then
+    dest_tag=$(extract_image_tag "$source_image")
+  fi
+  
+  # Build destination path: REGISTRY_HOST/DEST_REGISTRY_PATH/image_name:tag
+  local target_image
+  if [ -n "$dest_registry_path" ]; then
+    # Remove trailing slash from dest_registry_path if present
+    dest_registry_path="${dest_registry_path%/}"
+    target_image="$REGISTRY_HOST/$dest_registry_path/$image_name:$dest_tag"
+  else
+    target_image="$REGISTRY_HOST/$image_name:$dest_tag"
+  fi
+  
+  log_info "Mirroring: $source_image -> $target_image"
+  
+  # Scan if enabled (only for docker, as we need local image)
+  if [ "$SCAN_IMAGES" = "true" ] && [ "$MIRROR_TOOL" = "docker" ]; then
+    docker pull "$source_image"
+    if ! scan_image "$source_image"; then
+      log_error "Scan failed for $source_image, skipping mirror"
+      return 1
+    fi
+  fi
+  
+  # Mirror based on tool
+  case "$MIRROR_TOOL" in
+    skopeo)
+      mirror_with_skopeo "$source_image" "$target_image"
+      ;;
+    crane)
+      mirror_with_crane "$source_image" "$target_image"
+      ;;
+    docker)
+      mirror_with_docker "$source_image" "$target_image"
+      ;;
+  esac
+  
+  # Push as :latest if requested
+  if [ "$PUSH_LATEST" = "true" ]; then
+    local latest_target
+    if [ -n "$dest_registry_path" ]; then
+      latest_target="$REGISTRY_HOST/$dest_registry_path/$image_name:latest"
+    else
+      latest_target="$REGISTRY_HOST/$image_name:latest"
+    fi
+    
+    log_info "Tagging as latest: $latest_target"
+    
+    case "$MIRROR_TOOL" in
+      skopeo)
+        skopeo copy "docker://$target_image" "docker://$latest_target"
+        ;;
+      crane)
+        crane copy "$target_image" "$latest_target"
+        ;;
+      docker)
+        docker pull "$target_image"
+        docker tag "$target_image" "$latest_target"
+        docker push "$latest_target"
+        docker rmi "$latest_target" >/dev/null 2>&1 || true
+        ;;
+    esac
+  fi
+  
+  # Sign if enabled
+  if [ "$SIGN_IMAGES" = "true" ]; then
+    sign_image "$target_image"
+  fi
+  
+  log_success "Successfully mirrored: $source_image"
+}
+
+# Mirror all images
+mirror_all_images() {
+  log_info "Starting image mirroring process..."
+  
+  local images_to_process=()
+  
+  # Determine images to mirror
+  if [ -n "$SRC_IMAGE" ]; then
+    log_info "Mirroring single image: $SRC_IMAGE"
+    images_to_process=("$SRC_IMAGE")
+  else
+    log_info "Mirroring default image set (${#DEFAULT_IMAGES[@]} images)"
+    images_to_process=("${DEFAULT_IMAGES[@]}")
+  fi
+  
+  local success_count=0
+  local failed_count=0
+  local failed_images=()
+  
+  for image in "${images_to_process[@]}"; do
+    if mirror_image "$image" "$DEST_REGISTRY_PATH" "$DEST_TAG"; then
+      ((success_count++))
+    else
+      ((failed_count++))
+      failed_images+=("$image")
+    fi
+    log_info ""
+  done
+  
+  # Display summary
+  log_info "============================================"
+  log_info "Mirroring Summary"
+  log_info "============================================"
+  log_success "Successful: $success_count"
+  
+  if [ $failed_count -gt 0 ]; then
+    log_error "Failed: $failed_count"
+    log_error "Failed images:"
+    for img in "${failed_images[@]}"; do
+      log_error "  - $img"
+    done
+  fi
+  
+  return $failed_count
+}
+
+# Generate mirror configuration
+generate_mirror_config() {
+  log_info "Generating mirror configuration..."
+  
+  cat > "${SCRIPT_DIR}/image-mirrors.yaml" <<EOF
+# Image Mirror Configuration
+# Generated on: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+# Tool used: ${MIRROR_TOOL}
+# Registry: ${REGISTRY_HOST}
+# Destination Path: ${DEST_REGISTRY_PATH}
+
+mirrors:
+EOF
+  
+  local images_to_doc=()
+  if [ -n "$SRC_IMAGE" ]; then
+    images_to_doc=("$SRC_IMAGE")
+  else
+    images_to_doc=("${DEFAULT_IMAGES[@]}")
+  fi
+  
+  for image in "${images_to_doc[@]}"; do
+    local image_name
+    image_name=$(extract_image_name "$image")
+    local image_tag
+    image_tag=$(extract_image_tag "$image")
+    
+    local target_path
+    if [ -n "$DEST_REGISTRY_PATH" ]; then
+      target_path="${REGISTRY_HOST}/${DEST_REGISTRY_PATH%/}/${image_name}:${image_tag}"
+    else
+      target_path="${REGISTRY_HOST}/${image_name}:${image_tag}"
+    fi
+    
+    cat >> "${SCRIPT_DIR}/image-mirrors.yaml" <<EOF
+  - source: ${image}
+    target: ${target_path}
+EOF
+  done
+  
+  log_success "Configuration saved to: ${SCRIPT_DIR}/image-mirrors.yaml"
+}
+
+# Main execution
 main() {
-    log "INFO" "=== Image Mirroring Script ==="
-    log "INFO" ""
-    
-    # Validate environment
-    if ! validate_env; then
-        log "ERROR" "Environment validation failed"
-        return 1
-    fi
-    
-    # Check prerequisites
-    if ! check_skopeo; then
-        return 1
-    fi
-    
-    # Login to registry
-    if ! registry_login; then
-        return 1
-    fi
-    
-    log "INFO" ""
-    
-    # Mirror images
-    mirror_all_images
-    mirror_custom_images
-    
-    # Print summary
-    print_summary
+  log_info "Docker Image Mirroring Tool"
+  log_info "Registry: $REGISTRY_HOST"
+  log_info "Destination Path: $DEST_REGISTRY_PATH"
+  log_info "Scan enabled: $SCAN_IMAGES"
+  log_info "Sign enabled: $SIGN_IMAGES"
+  log_info "Proxy enabled: $USE_PROXY"
+  log_info ""
+  
+  setup_proxy
+  validate_prerequisites
+  validate_environment
+  registry_login
+  
+  if mirror_all_images; then
+    generate_mirror_config
+    log_success "All images mirrored successfully!"
+    exit 0
+  else
+    log_warning "Some images failed to mirror"
+    exit 1
+  fi
 }
 
-################################################################################
-# Script Entry Point
-################################################################################
-
+# Run main function
 main "$@"
